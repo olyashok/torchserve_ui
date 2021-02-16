@@ -49,7 +49,7 @@ class ThreadedCamera(object):
 
     def getframe(self):
         return self.frame
-        cv2.waitKey(self.FPS_MS)
+
 
 
 st.set_page_config(layout="wide")
