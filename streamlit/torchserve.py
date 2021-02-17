@@ -127,7 +127,7 @@ def register(stub, model_name, local=False):
         'url': url,
         'initial_workers': 1,
         'synchronous': True,
-        'model_name': model_name
+        'model_name': model_name.replace(".mar", "")
     }
     response = stub.RegisterModel(
         management_pb2.RegisterModelRequest(**params))
