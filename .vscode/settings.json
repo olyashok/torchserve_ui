@@ -2,5 +2,9 @@
     "python.linting.pylintEnabled": false,
     "python.linting.flake8Enabled": true,
     "python.linting.enabled": true,
-    "python.pythonPath": "/home/alex/anaconda3/envs/streamlit/bin/python"
+    "editor.formatOnSave": true,
+    "python.pythonPath": "/home/alex/anaconda3/envs/streamlit/bin/python",
+    "python.linting.flake8Args": [
+        "--max-line-length=140"
+    ],
 }

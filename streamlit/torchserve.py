@@ -1,14 +1,8 @@
-import datetime
 import io
 import itertools
-import os
-import re
 import subprocess
-import sys
 import time
 import urllib.request
-from os import listdir
-from os.path import isfile, join
 from threading import Thread
 from typing import Tuple
 
@@ -19,7 +13,6 @@ import pandas as pd
 import requests
 from PIL import Image, ImageDraw
 
-import inference_pb2
 import inference_pb2_grpc
 import management_pb2
 import management_pb2_grpc
@@ -49,7 +42,6 @@ class ThreadedCamera(object):
 
     def getframe(self):
         return self.frame
-
 
 
 st.set_page_config(layout="wide")
@@ -109,9 +101,6 @@ def get_management_stub():
 
 
 def infer(stub, model_name, model_input):
-    #input_data = {'data': model_input}
-    #response = stub.Predictions(inference_pb2.PredictionsRequest(model_name=model_name, input=input_data))
-    #prediction = response.prediction.decode('utf-8')
     url = 'http://localhost:8080/predictions/{}'.format(model_name)
     prediction = requests.post(url, data=model_input).text
     return prediction
@@ -340,7 +329,7 @@ while True:
             data_placeholder.write(df)
 
     image_placeholder.image(np.array(pil_image),
-                            caption=f"Processed image", use_column_width=True,)
+                            caption="Processed image", use_column_width=True,)
 
     if stream is not None:
         time.sleep(0.05)
