@@ -5,6 +5,7 @@ import time
 import urllib.request
 from threading import Thread
 from typing import Tuple
+from os import path
 
 import cv2
 import grpc
@@ -47,12 +48,16 @@ class ThreadedCamera(object):
 st.set_page_config(layout="wide")
 
 TEST_IMAGES = {
-    "Gus": "/mnt/nas_downloads/data/unifi/labeled/gus/deepstack_object_uvc_g3_flex_backyard_2021-01-17_14-54-19_object_sheep_1.jpg",
+    "Front snap": "http://192.168.10.211/snap.jpeg",
+    "B snap": "http://192.168.10.197/snap.jpeg",
+    "Wifi snap": ["http://192.168.10.190/snap.jpeg"],
     "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg",
     "Front 3840x2160 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ySci8n2TNfOncXMb"],
     "Front 640x360 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ahoCPkXFexpDjXAS"],
     "Wifi 640x360 cam": ["http://192.168.10.190/snap.jpeg", "rtsp://192.168.10.1:7447/aVw23e6tyMAWliBD"],
     "Backyard cam": ["http://192.168.10.232/snap.jpeg", "rtsp://192.168.10.1:7447/ahoCPkXFexpDjXAS"],
+    "B 1920x1028 cam ": ["http://192.168.10.197/snap.jpeg", "rtsp://192.168.10.1:7447/JdCDi8nwunLfXqbD"],
+    "B 640x360 cam ": ["http://192.168.10.197/snap.jpeg", "rtsp://192.168.10.1:7447/fZSTd3E7sQ7AWt7Q"],
     "Doorbell 1600x1200 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/cshR3cmt8nir4yEh"],
     "Doorbell 480x360 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/pc0k43FyuEx66TFJ"],
 }
@@ -207,8 +212,15 @@ def draw_box(
 
 models = ["none", "Remote: resnet-18", "Remote: alexnet", "Remote: densenet161", "Remote: vgg11_v2", "Remote: squeezenet1_1",
           "Remote: resnet-152-batch_v2", "Remote: fastrcnn", "Remote: fcn_resnet_101_scripted", "Remote: maskrcnn"]
-result = subprocess.run(['/usr/bin/docker', 'exec', '-it', CONTAINER, 'ls', '-1',
-                         '/home/model-server/model-store'], stdout=subprocess.PIPE).stdout.decode('utf-8').split('\n')
+if path.exists("/usr/bin/docker"):
+    # outside container
+    result = subprocess.run(['/usr/bin/docker', 'exec', '-it', CONTAINER, 'ls', '-1',
+                             '/home/model-server/model-store'], stdout=subprocess.PIPE).stdout.decode('utf-8').split('\n')
+else:
+    # inside container
+    result = subprocess.run(['ls', '-1',
+                             '/home/model-server/model-store'], stdout=subprocess.PIPE).stdout.decode('utf-8').split('\n')
+
 result = [f"Local: {file.strip()}" for file in result if len(file) > 0]
 models.extend(result)
 
@@ -263,24 +275,34 @@ data_placeholder = col2.empty()
 if stream is not None:
     video = cv2.VideoCapture(stream)
     video.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+    fps = video.get(cv2.CAP_PROP_FPS)
 
 tic = time.perf_counter()
 frameFpsStart = 0
+frameIdProcStart = 0
+frameIdProc = 0
 frameId = 0
 
+skip = 0
 while True:
     if stream is not None:
         success, npimage = video.read()
+        npimage = cv2.cvtColor(npimage, cv2.COLOR_BGR2RGB)
         frameId = frameId + 1
-        if frameId % 15 == 0:
-            fps_real = 1/(time.perf_counter()-tic) * (frameId-frameFpsStart)
-            frame_placeholder.write(f"{fps_real:0.4f} FPS")
-            frameFpsStart = frameId
-            tic = time.perf_counter()
-            if fps_real < 15:
-                time.sleep(1/15)
-                continue
-        pil_image = Image.fromarray(npimage.astype('uint8'), 'RGB')
+        fps_real = 1/(time.perf_counter()-tic) * (frameId-frameFpsStart)
+        if fps_real < fps and skip < 15:
+            skip = skip + 1
+            continue
+        skip = 0
+        frameIdProc = frameIdProc + 1
+        fps_actual = 1/(time.perf_counter()-tic) * \
+            (frameIdProc-frameIdProcStart)
+        frame_placeholder.write(
+            f"{fps_real:0.2f} cycle FPS vs {fps_actual:0.2f} actual FPS vs stream {fps} FPS")
+        frameFpsStart = frameId
+        frameIdProcStart = frameIdProc
+        tic = time.perf_counter()
+        pil_image = Image.fromarray(npimage)
     else:
         if img_file_buffer is not None:
             pil_image = Image.open(img_file_buffer)
@@ -292,7 +314,7 @@ while True:
 
     if model is not None and model != "none":
         img_byte_arr = io.BytesIO()
-        pil_image.save(img_byte_arr, format='PNG')
+        pil_image.save(img_byte_arr, format='JPEG')
         img_byte_arr = img_byte_arr.getvalue()
         draw = ImageDraw.Draw(pil_image)
 
@@ -330,8 +352,5 @@ while True:
 
     image_placeholder.image(np.array(pil_image),
                             caption="Processed image", use_column_width=True,)
-
-    if stream is not None:
-        time.sleep(0.05)
-    else:
+    if stream is None:
         break
