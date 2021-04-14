@@ -6,7 +6,7 @@ import urllib.request
 from threading import Thread
 from typing import Tuple
 from os import path
-
+import os
 import cv2
 import grpc
 import numpy as np
@@ -61,6 +61,15 @@ TEST_IMAGES = {
     "Doorbell 1600x1200 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/cshR3cmt8nir4yEh"],
     "Doorbell 480x360 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/pc0k43FyuEx66TFJ"],
 }
+
+directory = f'/mnt/nas_downloads/data/unifitest'
+i = 1
+for filename in os.listdir(directory):
+    if (filename.endswith(".jpg") or filename.endswith(".png")) and "_object_" in filename:
+        TEST_IMAGES[f"Crop #{i}"] = f"{directory}/{filename}"
+        i = i + 1
+    else:
+        continue
 
 CONTAINER = "serve_xaser"
 
