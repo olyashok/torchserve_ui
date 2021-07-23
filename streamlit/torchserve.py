@@ -48,18 +48,12 @@ class ThreadedCamera(object):
 st.set_page_config(layout="wide")
 
 TEST_IMAGES = {
-    "Front snap": "http://192.168.10.211/snap.jpeg",
-    "B snap": "http://192.168.10.197/snap.jpeg",
-    "Wifi snap": ["http://192.168.10.190/snap.jpeg"],
+    "Front snap": "http://192.168.10.184/snap.jpeg",
+    "Driveway snap": "http://192.168.10.193/snap.jpeg",
+    "Dock snap": "http://192.168.10.203/snap.jpeg",
     "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg",
-    "Front 3840x2160 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ySci8n2TNfOncXMb"],
-    "Front 640x360 cam": ["http://192.168.10.211/snap.jpeg", "rtsp://192.168.10.1:7447/ahoCPkXFexpDjXAS"],
-    "Wifi 640x360 cam": ["http://192.168.10.190/snap.jpeg", "rtsp://192.168.10.1:7447/aVw23e6tyMAWliBD"],
-    "Backyard cam": ["http://192.168.10.232/snap.jpeg", "rtsp://192.168.10.1:7447/ahoCPkXFexpDjXAS"],
-    "B 1920x1028 cam ": ["http://192.168.10.197/snap.jpeg", "rtsp://192.168.10.1:7447/JdCDi8nwunLfXqbD"],
-    "B 640x360 cam ": ["http://192.168.10.197/snap.jpeg", "rtsp://192.168.10.1:7447/fZSTd3E7sQ7AWt7Q"],
-    "Doorbell 1600x1200 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/cshR3cmt8nir4yEh"],
-    "Doorbell 480x360 cam": ["http://192.168.10.198/snap.jpeg", "rtsp://192.168.10.1:7447/pc0k43FyuEx66TFJ"],
+    "Doorbell 1600x1200 cam": ["http://192.168.10.217/snap.jpeg", "rtsp://192.168.10.1:7447/VtvnTtlzl8gZW762"],
+    "Boat 1600x1200 cam": ["http://192.168.10.203/snap.jpeg", "rtsp://192.168.10.1:7447/ZSj7MH6EoTWx18fG"],
 }
 
 directory = f'/mnt/nas_downloads/data/unifitest'
