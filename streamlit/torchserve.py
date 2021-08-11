@@ -49,11 +49,9 @@ st.set_page_config(layout="wide")
 
 TEST_IMAGES = {
     "Front snap": "http://192.168.10.184/snap.jpeg",
-    "Driveway snap": "http://192.168.10.193/snap.jpeg",
-    "Dock snap": "http://192.168.10.203/snap.jpeg",
+    "Dock snap": "http://192.168.10.198/snap.jpeg",
+    "Driveway snap": "http://192.168.10.246/snap.jpeg",
     "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg",
-    "Doorbell 1600x1200 cam": ["http://192.168.10.217/snap.jpeg", "rtsp://192.168.10.1:7447/VtvnTtlzl8gZW762"],
-    "Boat 1600x1200 cam": ["http://192.168.10.203/snap.jpeg", "rtsp://192.168.10.1:7447/ZSj7MH6EoTWx18fG"],
 }
 
 directory = f'/mnt/nas_downloads/data/unifitest'
@@ -70,6 +68,17 @@ CONTAINER = "serve_xaser"
 RED = (255, 0, 0)  # For objects within the ROI
 GREEN = (0, 255, 0)  # For ROI box
 YELLOW = (255, 255, 0)  # For objects outside the ROI
+
+DEFAULT_ROI_Y_MIN = 0.0
+DEFAULT_ROI_Y_MAX = 1.0
+DEFAULT_ROI_X_MIN = 0.0
+DEFAULT_ROI_X_MAX = 1.0
+DEFAULT_ROI = (
+    DEFAULT_ROI_Y_MIN,
+    DEFAULT_ROI_X_MIN,
+    DEFAULT_ROI_Y_MAX,
+    DEFAULT_ROI_X_MAX,
+)
 
 
 def paginator(label, items, items_per_page=10, on_sidebar=True):
@@ -268,6 +277,25 @@ if pick_img:
 img_file_buffer = st.sidebar.file_uploader(
     "Upload an image", type=["png", "jpg", "jpeg"])
 
+# Get ROI info
+st.sidebar.title("ROI")
+ROI_X_MIN = st.sidebar.slider("x_min", 0.0, 1.0, DEFAULT_ROI_X_MIN)
+ROI_Y_MIN = st.sidebar.slider("y_min", 0.0, 1.0, DEFAULT_ROI_Y_MIN)
+ROI_X_MAX = st.sidebar.slider("x_max", 0.0, 1.0, DEFAULT_ROI_X_MAX)
+ROI_Y_MAX = st.sidebar.slider("y_max", 0.0, 1.0, DEFAULT_ROI_Y_MAX)
+ROI_TUPLE = (
+    ROI_Y_MIN,
+    ROI_X_MIN,
+    ROI_Y_MAX,
+    ROI_X_MAX,
+)
+ROI_DICT = {
+    "x_min": ROI_X_MIN,
+    "y_min": ROI_Y_MIN,
+    "x_max": ROI_X_MAX,
+    "y_max": ROI_Y_MAX,
+}
+
 col1, col2 = st.beta_columns(2)
 
 image_placeholder = col1.empty()
@@ -315,12 +343,13 @@ while True:
             else:
                 pil_image = Image.open(filename)
 
-    if model is not None and model != "none":
-        img_byte_arr = io.BytesIO()
-        pil_image.save(img_byte_arr, format='JPEG')
-        img_byte_arr = img_byte_arr.getvalue()
-        draw = ImageDraw.Draw(pil_image)
 
+    img_byte_arr = io.BytesIO()
+    pil_image.save(img_byte_arr, format='JPEG')
+    img_byte_arr = img_byte_arr.getvalue()
+    draw = ImageDraw.Draw(pil_image)
+
+    if model is not None and model != "none":
         infers = time.perf_counter()
         response = eval(infer(get_inference_stub(), model, img_byte_arr))
         inferf = time.perf_counter()
@@ -342,8 +371,8 @@ while True:
             df = pd.DataFrame()
             for pred in response:
                 label = list(pred.keys())[0]
-                row = [label, f"{pred['score']:0.2f}", f"{pred[label][0]:0.0f}",
-                       f"{pred[label][1]:0.0f}", f"{pred[label][2]:0.0f}", f"{pred[label][3]:0.0f}"]
+                row = [label, f"{pred['score']:0.2f}", f"{pred[label][0]/pil_image.width:0.2f}",
+                       f"{pred[label][1]/pil_image.height:0.2f}", f"{pred[label][2]/pil_image.width:0.2f}", f"{pred[label][3]/pil_image.height:0.2f}"]
                 row = pd.DataFrame(row).T
                 df = df.append(row)
                 # col2.write(row)
@@ -352,6 +381,17 @@ while True:
             f"Infer in {inferf - infers:0.4f}s or {1/(inferf-infers):0.4f} FPS")
         if df is not None:
             data_placeholder.write(df)
+
+    # Draw ROI box
+    if ROI_TUPLE != DEFAULT_ROI or True:
+        draw_box(
+            draw,
+            ROI_TUPLE,
+            pil_image.width,
+            pil_image.height,
+            text="ROI",
+            color=GREEN,
+        )
 
     image_placeholder.image(np.array(pil_image),
                             caption="Processed image", use_column_width=True,)
