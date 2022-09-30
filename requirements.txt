@@ -1,6 +1,6 @@
 numpy>=1.18.5
 Pillow>=7.1.2
-deepstack-python==0.8
-streamlit==0.73.0
+streamlit
 grpcio
 opencv-python
+tritonclient[all]

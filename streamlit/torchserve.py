@@ -1,5 +1,7 @@
 import io
 import itertools
+import datetime
+from dateutil.parser import parse
 import subprocess
 import time
 import urllib.request
@@ -18,6 +20,9 @@ import inference_pb2_grpc
 import management_pb2
 import management_pb2_grpc
 import streamlit as st
+
+import tritonclient.grpc as grpcclient
+from tritonclient.utils import InferenceServerException
 
 
 class ThreadedCamera(object):
@@ -52,6 +57,7 @@ TEST_IMAGES = {
     "Dock snap": "http://192.168.10.198/snap.jpeg",
     "Driveway snap": "http://192.168.10.246/snap.jpeg",
     "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg",
+    "Labeled": "",
 }
 
 directory = f'/mnt/nas_downloads/data/unifitest'
@@ -221,7 +227,6 @@ def draw_box(
             (left + line_width, abs(top - line_width - font_height)), text, fill=color
         )
 
-
 models = ["none", "Remote: resnet-18", "Remote: alexnet", "Remote: densenet161", "Remote: vgg11_v2", "Remote: squeezenet1_1",
           "Remote: resnet-152-batch_v2", "Remote: fastrcnn", "Remote: fcn_resnet_101_scripted", "Remote: maskrcnn"]
 if path.exists("/usr/bin/docker"):
@@ -236,34 +241,44 @@ else:
 result = [f"Local: {file.strip()}" for file in result if len(file) > 0]
 models.extend(result)
 
-model = st.sidebar.selectbox('Zoo', models)
+images = TEST_IMAGES
+pick_img = st.sidebar.radio("Which image?", [x for x in images.keys()])
 
-if st.sidebar.button('Register'):
-    source, model_name = model.split(" ")
-    if source == "Local:":
-        r = register(get_management_stub(), model_name, True)
-    else:
-        r = register(get_management_stub(), model_name, False)
-    st.write(r)
-
-params = {
-    'limit': 100,
-    'next_page_token': 0
-}
-
+img_file_buffer = st.sidebar.file_uploader(
+    "Upload an image", type=["png", "jpg", "jpeg"])
 
 models = ['none']
-for model in eval(get_management_stub().ListModels(management_pb2.ListModelsRequest(**params)).msg)['models']:
-    models.append(model['modelName'])
+tochserve = True
+try:
+    for model in eval(get_management_stub().ListModels(management_pb2.ListModelsRequest(**params)).msg)['models']:
+        models.append(model['modelName'])
+
+    model = st.sidebar.selectbox('Zoo', models)
+
+    if st.sidebar.button('Register'):
+        source, model_name = model.split(" ")
+        if source == "Local:":
+            r = register(get_management_stub(), model_name, True)
+        else:
+            r = register(get_management_stub(), model_name, False)
+        st.write(r)
+
+    params = {
+        'limit': 100,
+        'next_page_token': 0
+    }
+
+except:
+    st.sidebar.write("Torchserve is down")
+    tochserve = False
+    pass
 
 model = st.sidebar.selectbox('Model to use', models)
 
-if st.sidebar.button('De-register'):
-    r = unregister(get_management_stub(), model)
-    st.write(r)
-
-images = TEST_IMAGES
-pick_img = st.sidebar.radio("Which image?", [x for x in images.keys()])
+if (tochserve):
+    if st.sidebar.button('De-register'):
+        r = unregister(get_management_stub(), model)
+        st.write(r)
 
 if pick_img:
     item = images[pick_img]
@@ -274,8 +289,7 @@ if pick_img:
         filename = item[0]
         stream = item[1]
 
-img_file_buffer = st.sidebar.file_uploader(
-    "Upload an image", type=["png", "jpg", "jpeg"])
+
 
 # Get ROI info
 st.sidebar.title("ROI")
@@ -315,85 +329,140 @@ frameIdProc = 0
 frameId = 0
 
 skip = 0
-while True:
-    if stream is not None:
-        success, npimage = video.read()
-        npimage = cv2.cvtColor(npimage, cv2.COLOR_BGR2RGB)
-        frameId = frameId + 1
-        fps_real = 1/(time.perf_counter()-tic) * (frameId-frameFpsStart)
-        if fps_real < fps and skip < 15:
-            skip = skip + 1
-            continue
-        skip = 0
-        frameIdProc = frameIdProc + 1
-        fps_actual = 1/(time.perf_counter()-tic) * \
-            (frameIdProc-frameIdProcStart)
-        frame_placeholder.write(
-            f"{fps_real:0.2f} cycle FPS vs {fps_actual:0.2f} actual FPS vs stream {fps} FPS")
-        frameFpsStart = frameId
-        frameIdProcStart = frameIdProc
-        tic = time.perf_counter()
-        pil_image = Image.fromarray(npimage)
-    else:
-        if img_file_buffer is not None:
-            pil_image = Image.open(img_file_buffer)
+
+if "Labeled" in pick_img:
+    labels = "/mnt/localshared/data/hassio/tstreamer/labels.csv"
+    excludes_file="/mnt/localshared/data/hassio/tstreamer/exclude.lst"
+
+    df = pd.read_csv(labels, header=0)
+    df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
+    now = datetime.datetime.now() - datetime.timedelta(days=3)
+    df = df[df['stamp'] >= now.strftime("%Y-%m-%d")]
+    df['gpuuid'] = df['puuid'].map(df.set_index('uuid')['puuid'])
+    roundto=30
+    df['x1c'] = round(df['x1']/roundto)*roundto
+    df['x2c'] = round(df['x2']/roundto)*roundto
+    df['y1c'] = round(df['y1']/roundto)*roundto
+    df['y2c'] = round(df['y2']/roundto)*roundto
+    df = df[(df.model == "yolov5x-1280")]
+    dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], values=['uuid'], aggfunc='count')
+    dfc.sort_values(ascending=False, by=['uuid'], inplace=True)
+    dfc=dfc.head(50)
+    df = pd.merge(df, dfc, on=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], how='inner')
+
+    for index, row in dfc.iterrows():
+        dfcu = df[df['uuid_y'] == row.uuid]
+        dfcu['filename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_" + dfcu['model'] + "_object_" + dfcu['label'] + "_" + dfcu['uuid_x'] + "_pad.jpg"
+        dfcu['pfilename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_nobox_" + dfcu['puuid'] + ".jpg"
+        dfcu['exists'] = dfcu['filename'].map(os.path.isfile)
+        dfcu = dfcu[dfcu['exists'] == 1].head(5)
+
+        with open(dfcu.iloc[0]['pfilename'],'rb') as img_file:
+            img_file.seek(163)
+            a = img_file.read(2)
+            height = (a[0] << 8) + a[1]
+            a = img_file.read(2)
+            width = (a[0] << 8) + a[1]
+
+            cx = ((index[2] + index[4]) / 2) / width
+            cy = ((index[3] + index[5]) / 2) / height
+
+            exclduestr = f"(\"{index[0]}\" not in args.name or \"{index[1]}\" not in obj[\"name\"] or not ({cx-roundto/width} <= obj[\"centroid\"][\"x\"] <= {cx+roundto/width} and {cy-roundto/height} <= obj[\"centroid\"][\"y\"] <= {cy+roundto/height})) and"
+
+            with open(excludes_file) as excludesfile:
+                if exclduestr in excludesfile.read():
+                    continue
+
+            st.write(f"{row['uuid']}")
+
+            st.image(dfcu.filename.values.tolist(), width=100)
+
+            if st.button(f"Exclude {index})"):
+                st.write(f"Excluding")
+                with open(excludes_file, "a") as excludesfile:
+                    excludesfile.write(f"##### automated exclude\n")
+                    excludesfile.write(f"{exclduestr}\n")
+else:
+    while True:
+        if stream is not None:
+            success, npimage = video.read()
+            npimage = cv2.cvtColor(npimage, cv2.COLOR_BGR2RGB)
+            frameId = frameId + 1
+            fps_real = 1/(time.perf_counter()-tic) * (frameId-frameFpsStart)
+            if fps_real < fps and skip < 15:
+                skip = skip + 1
+                continue
+            skip = 0
+            frameIdProc = frameIdProc + 1
+            fps_actual = 1/(time.perf_counter()-tic) * \
+                (frameIdProc-frameIdProcStart)
+            frame_placeholder.write(
+                f"{fps_real:0.2f} cycle FPS vs {fps_actual:0.2f} actual FPS vs stream {fps} FPS")
+            frameFpsStart = frameId
+            frameIdProcStart = frameIdProc
+            tic = time.perf_counter()
+            pil_image = Image.fromarray(npimage)
         else:
-            if "http" in filename:
-                pil_image = Image.open(urllib.request.urlopen(filename))
+            if img_file_buffer is not None:
+                pil_image = Image.open(img_file_buffer)
             else:
-                pil_image = Image.open(filename)
+                if "http" in filename:
+                    pil_image = Image.open(urllib.request.urlopen(filename))
+                else:
+                    pil_image = Image.open(filename)
 
 
-    img_byte_arr = io.BytesIO()
-    pil_image.save(img_byte_arr, format='JPEG')
-    img_byte_arr = img_byte_arr.getvalue()
-    draw = ImageDraw.Draw(pil_image)
 
-    if model is not None and model != "none":
-        infers = time.perf_counter()
-        response = eval(infer(get_inference_stub(), model, img_byte_arr))
-        inferf = time.perf_counter()
-        objects = get_objects(response, pil_image.width, pil_image.height)
+        img_byte_arr = io.BytesIO()
+        pil_image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        draw = ImageDraw.Draw(pil_image)
 
-        for obj in objects:
-            name = obj["name"]
-            confidence = obj["confidence"]
-            box = obj["bounding_box"]
-            box_label = f"{name} {confidence}"
-            draw_box(draw, (box["y_min"], box["x_min"], box["y_max"], box["x_max"]),
-                     pil_image.width, pil_image.height, text=box_label, color=YELLOW,)
+        if model is not None and model != "none":
+            infers = time.perf_counter()
+            response = eval(infer(get_inference_stub(), model, img_byte_arr))
+            inferf = time.perf_counter()
+            objects = get_objects(response, pil_image.width, pil_image.height)
 
-        if response is list or isinstance(response, dict):
-            df = pd.DataFrame(response.items())
-        elif isinstance(response, str):
-            col2.write(response)
-        else:
-            df = pd.DataFrame()
-            for pred in response:
-                label = list(pred.keys())[0]
-                row = [label, f"{pred['score']:0.2f}", f"{pred[label][0]/pil_image.width:0.2f}",
-                       f"{pred[label][1]/pil_image.height:0.2f}", f"{pred[label][2]/pil_image.width:0.2f}", f"{pred[label][3]/pil_image.height:0.2f}"]
-                row = pd.DataFrame(row).T
-                df = df.append(row)
-                # col2.write(row)
+            for obj in objects:
+                name = obj["name"]
+                confidence = obj["confidence"]
+                box = obj["bounding_box"]
+                box_label = f"{name} {confidence}"
+                draw_box(draw, (box["y_min"], box["x_min"], box["y_max"], box["x_max"]),
+                        pil_image.width, pil_image.height, text=box_label, color=YELLOW,)
 
-        timer_placeholder.write(
-            f"Infer in {inferf - infers:0.4f}s or {1/(inferf-infers):0.4f} FPS")
-        if df is not None:
-            data_placeholder.write(df)
+            if response is list or isinstance(response, dict):
+                df = pd.DataFrame(response.items())
+            elif isinstance(response, str):
+                col2.write(response)
+            else:
+                df = pd.DataFrame()
+                for pred in response:
+                    label = list(pred.keys())[0]
+                    row = [label, f"{pred['score']:0.2f}", f"{pred[label][0]/pil_image.width:0.2f}",
+                        f"{pred[label][1]/pil_image.height:0.2f}", f"{pred[label][2]/pil_image.width:0.2f}", f"{pred[label][3]/pil_image.height:0.2f}"]
+                    row = pd.DataFrame(row).T
+                    df = df.append(row)
+                    # col2.write(row)
 
-    # Draw ROI box
-    if ROI_TUPLE != DEFAULT_ROI or True:
-        draw_box(
-            draw,
-            ROI_TUPLE,
-            pil_image.width,
-            pil_image.height,
-            text="ROI",
-            color=GREEN,
-        )
+            timer_placeholder.write(
+                f"Infer in {inferf - infers:0.4f}s or {1/(inferf-infers):0.4f} FPS")
+            if df is not None:
+                data_placeholder.write(df)
 
-    image_placeholder.image(np.array(pil_image),
-                            caption="Processed image", use_column_width=True,)
-    if stream is None:
-        break
+        # Draw ROI box
+        if ROI_TUPLE != DEFAULT_ROI or True:
+            draw_box(
+                draw,
+                ROI_TUPLE,
+                pil_image.width,
+                pil_image.height,
+                text="ROI",
+                color=GREEN,
+            )
+
+        image_placeholder.image(np.array(pil_image),
+                                caption="Processed image", use_column_width=True,)
+        if stream is None:
+            break
