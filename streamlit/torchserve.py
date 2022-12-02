@@ -1,6 +1,7 @@
 import io
 import itertools
 import datetime
+from math import ceil
 from dateutil.parser import parse
 import subprocess
 import time
@@ -11,6 +12,7 @@ from os import path
 import os
 import cv2
 import grpc
+import sys
 import numpy as np
 import pandas as pd
 import requests
@@ -23,6 +25,23 @@ import streamlit as st
 
 import tritonclient.grpc as grpcclient
 from tritonclient.utils import InferenceServerException
+from processing import preprocess, postprocess
+from render import render_box, render_filled_box, get_text_size, render_text, RAND_COLORS
+from labels import COCOLabels
+
+def highestPowerof2(n):
+   # Invalid input
+    if (n < 1):
+        return 0
+    res = 1
+    #Try all powers starting from 2^1
+    for i in range(8*sys.getsizeof(n)):
+        curr = 1 << i
+        # If current power is more than n, break
+        if (curr > n):
+             break
+        res = curr
+    return res
 
 
 class ThreadedCamera(object):
@@ -56,15 +75,21 @@ TEST_IMAGES = {
     "Front snap": "http://192.168.10.184/snap.jpeg",
     "Dock snap": "http://192.168.10.198/snap.jpeg",
     "Driveway snap": "http://192.168.10.246/snap.jpeg",
-    "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg",
-    "Labeled": "",
+    "Dock feed": "rtsps://192.168.10.1:7441/vHuSBFu9c7sMzM6C?enableSrtp",
+    "Inside snap": "http://192.168.10.197/snap.jpeg",
+    "Deck snap": "http://192.168.10.191/snap.jpeg",
+    "Inside feed": "rtsps://192.168.10.1:7441/IHAsRXsVzYuJwQK6?enableSrtp",
+    "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg"
 }
 
-directory = f'/mnt/nas_downloads/data/unifitest'
+directory = f'/mnt/localshared/data/hassio/tstreamer_dev'
 i = 1
 for filename in os.listdir(directory):
-    if (filename.endswith(".jpg") or filename.endswith(".png")) and "_object_" in filename:
-        TEST_IMAGES[f"Crop #{i}"] = f"{directory}/{filename}"
+    #if (filename.endswith(".jpg") or filename.endswith(".png")) and "_object_" in filename:
+    #    TEST_IMAGES[f"Crop #{i}"] = f"{directory}/{filename}"
+    #    i = i + 1
+    if (filename.endswith(".jpg") or filename.endswith(".png")) and "nobox" in filename:
+        TEST_IMAGES[f"Camera #{i}"] = f"{directory}/{filename}"
         i = i + 1
     else:
         continue
@@ -123,7 +148,7 @@ def get_management_stub():
     return stub
 
 
-def infer(stub, model_name, model_input):
+def infer_torchserve(stub, model_name, model_input):
     url = 'http://localhost:8080/predictions/{}'.format(model_name)
     prediction = requests.post(url, data=model_input).text
     return prediction
@@ -189,6 +214,49 @@ def get_objects(predictions: list, img_width: int, img_height: int):
         )
     return objects
 
+def get_objects_triton(predictions: list, img_width: int, img_height: int):
+    """Return objects with formatting and extra info."""
+    objects = []
+    decimal_places = 3
+    for box in predictions:
+        box2 = {
+            "height": round(box.height() / img_height, decimal_places),
+            "width": round(box.width() / img_width, decimal_places),
+            "y_min": round(box.y1 / img_height, decimal_places),
+            "x_min": round(box.x1 / img_width, decimal_places),
+            "y_max": round(box.y2 / img_height, decimal_places),
+            "x_max": round(box.x2 / img_width, decimal_places),
+        }
+        box_area = round(box2["height"] * box2["width"], decimal_places)
+        centroid = {
+            "x": round(box2["x_min"] + (box2["width"] / 2), decimal_places),
+            "y": round(box2["y_min"] + (box2["height"] / 2), decimal_places),
+        }
+        confidence = round(box.confidence, decimal_places)
+        objects.append(
+
+            {
+                "bounding_box": box2,
+                "box_area": box_area,
+                "centroid": centroid,
+                "name": COCOLabels(box.classID).name,
+                "confidence": confidence,
+            }
+        )
+    return objects
+
+def letterbox_image(image, size):
+    '''resize image with unchanged aspect ratio using padding'''
+    iw, ih = image.size
+    w, h = size
+    scale = min(w/iw, h/ih)
+    nw = int(iw*scale)
+    nh = int(ih*scale)
+
+    image = image.resize((nw,nh), Image.BICUBIC)
+    new_image = Image.new('RGB', size, (128,128,128))
+    new_image.paste(image, ((w-nw)//2, (h-nh)//2))
+    return new_image
 
 def draw_box(
     draw: ImageDraw,
@@ -241,83 +309,105 @@ else:
 result = [f"Local: {file.strip()}" for file in result if len(file) > 0]
 models.extend(result)
 
-images = TEST_IMAGES
-pick_img = st.sidebar.radio("Which image?", [x for x in images.keys()])
+mode = st.sidebar.radio("Detect or sort?", ['Detect', 'Sort'])
 
-img_file_buffer = st.sidebar.file_uploader(
+images = TEST_IMAGES
+if ('Detect' in mode):
+    pick_img = st.sidebar.radio("Which image?", [x for x in images.keys()])
+    img_file_buffer = st.sidebar.file_uploader(
     "Upload an image", type=["png", "jpg", "jpeg"])
 
-models = ['none']
-tochserve = True
-try:
-    for model in eval(get_management_stub().ListModels(management_pb2.ListModelsRequest(**params)).msg)['models']:
-        models.append(model['modelName'])
+    models = ['none']
+    tochserve = True
+    try:
+        for model in eval(get_management_stub().ListModels(management_pb2.ListModelsRequest(**params)).msg)['models']:
+            models.append(model['modelName'])
 
-    model = st.sidebar.selectbox('Zoo', models)
+        model = st.sidebar.selectbox('Zoo', models)
 
-    if st.sidebar.button('Register'):
-        source, model_name = model.split(" ")
-        if source == "Local:":
-            r = register(get_management_stub(), model_name, True)
-        else:
-            r = register(get_management_stub(), model_name, False)
-        st.write(r)
+        if st.sidebar.button('Register'):
+            source, model_name = model.split(" ")
+            if source == "Local:":
+                r = register(get_management_stub(), model_name, True)
+            else:
+                r = register(get_management_stub(), model_name, False)
+            st.write(r)
 
-    params = {
-        'limit': 100,
-        'next_page_token': 0
+        params = {
+            'limit': 100,
+            'next_page_token': 0
+        }
+    except:
+        st.sidebar.write("Torchserve is down")
+        tochserve = False
+        pass
+
+    triton = True
+    try:
+        triton_client = grpcclient.InferenceServerClient(url='localhost:8001', verbose=False)
+        if not triton_client.is_server_live():
+            st.write("FAILED : is_server_live")
+            triton = False
+        elif not triton_client.is_server_ready():
+            st.write("FAILED : is_server_ready")
+            triton = False
+        elif not triton_client.is_model_ready('yolov7'):
+            st.write("FAILED : is_model_ready")
+            triton = False
+        models = ['none','yolov7','yolov7x','yolov7-w6','yolov7-e6e']
+    except Exception as e:
+        st.write("context creation failed: " + str(e))
+        triton = False
+
+    model = st.sidebar.selectbox('Model to use', models)
+
+    if (tochserve):
+        if st.sidebar.button('De-register'):
+            r = unregister(get_management_stub(), model)
+            st.write(r)
+
+        # Get ROI info
+    st.sidebar.title("ROI")
+    ROI_X_MIN = st.sidebar.slider("x_min", 0.0, 1.0, DEFAULT_ROI_X_MIN)
+    ROI_Y_MIN = st.sidebar.slider("y_min", 0.0, 1.0, DEFAULT_ROI_Y_MIN)
+    ROI_X_MAX = st.sidebar.slider("x_max", 0.0, 1.0, DEFAULT_ROI_X_MAX)
+    ROI_Y_MAX = st.sidebar.slider("y_max", 0.0, 1.0, DEFAULT_ROI_Y_MAX)
+    ROI_TUPLE = (
+        ROI_Y_MIN,
+        ROI_X_MIN,
+        ROI_Y_MAX,
+        ROI_X_MAX,
+    )
+    ROI_DICT = {
+        "x_min": ROI_X_MIN,
+        "y_min": ROI_Y_MIN,
+        "x_max": ROI_X_MAX,
+        "y_max": ROI_Y_MAX,
     }
 
-except:
-    st.sidebar.write("Torchserve is down")
-    tochserve = False
-    pass
+else:
+    hide = st.sidebar.checkbox("Hide excluded objects", value=True)
 
-model = st.sidebar.selectbox('Model to use', models)
 
-if (tochserve):
-    if st.sidebar.button('De-register'):
-        r = unregister(get_management_stub(), model)
-        st.write(r)
 
-if pick_img:
+if 'Detect' in mode:
     item = images[pick_img]
-    if isinstance(item, str):
+    if "rtsp" not in item:
         filename = item
         stream = None
     else:
-        filename = item[0]
-        stream = item[1]
+        filename = item
+        stream = item
 
 
-
-# Get ROI info
-st.sidebar.title("ROI")
-ROI_X_MIN = st.sidebar.slider("x_min", 0.0, 1.0, DEFAULT_ROI_X_MIN)
-ROI_Y_MIN = st.sidebar.slider("y_min", 0.0, 1.0, DEFAULT_ROI_Y_MIN)
-ROI_X_MAX = st.sidebar.slider("x_max", 0.0, 1.0, DEFAULT_ROI_X_MAX)
-ROI_Y_MAX = st.sidebar.slider("y_max", 0.0, 1.0, DEFAULT_ROI_Y_MAX)
-ROI_TUPLE = (
-    ROI_Y_MIN,
-    ROI_X_MIN,
-    ROI_Y_MAX,
-    ROI_X_MAX,
-)
-ROI_DICT = {
-    "x_min": ROI_X_MIN,
-    "y_min": ROI_Y_MIN,
-    "x_max": ROI_X_MAX,
-    "y_max": ROI_Y_MAX,
-}
-
-col1, col2 = st.beta_columns(2)
+col1, col2 = st.columns(2)
 
 image_placeholder = col1.empty()
 frame_placeholder = col1.empty()
 timer_placeholder = col2.empty()
 data_placeholder = col2.empty()
 
-if stream is not None:
+if 'Detect' in mode and stream is not None:
     video = cv2.VideoCapture(stream)
     video.set(cv2.CAP_PROP_BUFFERSIZE, 2)
     fps = video.get(cv2.CAP_PROP_FPS)
@@ -330,58 +420,71 @@ frameId = 0
 
 skip = 0
 
-if "Labeled" in pick_img:
+if 'Sort' in mode:
     labels = "/mnt/localshared/data/hassio/tstreamer/labels.csv"
     excludes_file="/mnt/localshared/data/hassio/tstreamer/exclude.lst"
 
-    df = pd.read_csv(labels, header=0)
+    df = pd.read_csv(labels, header=0).tail(10000);
     df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
-    now = datetime.datetime.now() - datetime.timedelta(days=3)
+    now = datetime.datetime.now() - datetime.timedelta(days=7)
     df = df[df['stamp'] >= now.strftime("%Y-%m-%d")]
     df['gpuuid'] = df['puuid'].map(df.set_index('uuid')['puuid'])
-    roundto=30
-    df['x1c'] = round(df['x1']/roundto)*roundto
-    df['x2c'] = round(df['x2']/roundto)*roundto
-    df['y1c'] = round(df['y1']/roundto)*roundto
-    df['y2c'] = round(df['y2']/roundto)*roundto
-    df = df[(df.model == "yolov5x-1280")]
-    dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], values=['uuid'], aggfunc='count')
+    df['xr'] = df.apply(lambda row: highestPowerof2(row.x2 - row.x1), axis=1)
+    df['yr'] = df.apply(lambda row: highestPowerof2(row.y2 - row.y1), axis=1)
+    df['x1c'] = round(df['x1']/df['xr'])*df['xr']
+    df['x2c'] = round(df['x2']/df['xr'])*df['xr']
+    df['y1c'] = round(df['y1']/df['yr'])*df['yr']
+    df['y2c'] = round(df['y2']/df['yr'])*df['yr']
+    df = df[(df.model == "yolov7x")]
+    dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c', 'xr', 'yr'], values=['uuid'], aggfunc='count')
+    dfc.reset_index(inplace=True)
     dfc.sort_values(ascending=False, by=['uuid'], inplace=True)
-    dfc=dfc.head(50)
+    dfc = dfc[dfc['uuid'] > 3]
+    dfc=dfc.head(150)
     df = pd.merge(df, dfc, on=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], how='inner')
 
+    dfc
+
     for index, row in dfc.iterrows():
-        dfcu = df[df['uuid_y'] == row.uuid]
+        dfcu = df[(df['entity'] == row.entity) & (df['label'] == row.label) & (df['x1c'] == row.x1c) & (df['y1c'] == row.y1c) & (df['x2c'] == row.x2c) & (df['y2c'] == row.y2c)]
         dfcu['filename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_" + dfcu['model'] + "_object_" + dfcu['label'] + "_" + dfcu['uuid_x'] + "_pad.jpg"
         dfcu['pfilename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_nobox_" + dfcu['puuid'] + ".jpg"
-        dfcu['exists'] = dfcu['filename'].map(os.path.isfile)
+        dfcu['exists'] = dfcu['pfilename'].map(os.path.isfile)
         dfcu = dfcu[dfcu['exists'] == 1].head(5)
 
-        with open(dfcu.iloc[0]['pfilename'],'rb') as img_file:
-            img_file.seek(163)
-            a = img_file.read(2)
-            height = (a[0] << 8) + a[1]
-            a = img_file.read(2)
-            width = (a[0] << 8) + a[1]
+        if len(dfcu) > 0:
+            with open(dfcu.iloc[0]['pfilename'],'rb') as img_file:
+                img_file.seek(163)
+                a = img_file.read(2)
+                height = (a[0] << 8) + a[1]
+                a = img_file.read(2)
+                width = (a[0] << 8) + a[1]
 
-            cx = ((index[2] + index[4]) / 2) / width
-            cy = ((index[3] + index[5]) / 2) / height
+                cx = round (((row.x1c + row.x2c) / 2) / width,2)
+                cy = round (((row.y1c + row.y2c) / 2) / height,2)
 
-            exclduestr = f"(\"{index[0]}\" not in args.name or \"{index[1]}\" not in obj[\"name\"] or not ({cx-roundto/width} <= obj[\"centroid\"][\"x\"] <= {cx+roundto/width} and {cy-roundto/height} <= obj[\"centroid\"][\"y\"] <= {cy+roundto/height})) and"
+                area_min = round(row.xr*row.yr / (width*height) ,3)
+                xr = round(row.xr / width / 2, 3)
+                yr = round(row.yr / height / 2, 3)
 
-            with open(excludes_file) as excludesfile:
-                if exclduestr in excludesfile.read():
-                    continue
+                cx
+                cy
 
-            st.write(f"{row['uuid']}")
+                exclduestr = f"(\"{row.entity}\" not in args.name or \"{row.label}\" not in obj[\"name\"] or not ({area_min*0.75}<=obj[\"box_area\"]<={area_min*2} and {cx-xr} <= obj[\"centroid\"][\"x\"] <= {cx+xr} and {cy-yr} <= obj[\"centroid\"][\"y\"] <= {cy+yr})) and"
 
-            st.image(dfcu.filename.values.tolist(), width=100)
+                with open(excludes_file) as excludesfile:
+                    if exclduestr in excludesfile.read() and hide:
+                        continue
 
-            if st.button(f"Exclude {index})"):
-                st.write(f"Excluding")
-                with open(excludes_file, "a") as excludesfile:
-                    excludesfile.write(f"##### automated exclude\n")
-                    excludesfile.write(f"{exclduestr}\n")
+                st.write(f"{row['uuid']}")
+
+                st.image(dfcu.filename.values.tolist(), width=100)
+
+                if st.button(f"Exclude {exclduestr})"):
+                    st.write(f"Excluding")
+                    with open(excludes_file, "a") as excludesfile:
+                        excludesfile.write(f"##### automated exclude {datetime.datetime.now()}\n")
+                        excludesfile.write(f"{exclduestr}\n")
 else:
     while True:
         if stream is not None:
@@ -420,9 +523,40 @@ else:
 
         if model is not None and model != "none":
             infers = time.perf_counter()
-            response = eval(infer(get_inference_stub(), model, img_byte_arr))
-            inferf = time.perf_counter()
-            objects = get_objects(response, pil_image.width, pil_image.height)
+            if (tochserve):
+                response = eval(infer_torchserve(get_inference_stub(), model, img_byte_arr))
+                inferf = time.perf_counter()
+                objects = get_objects(response, pil_image.width, pil_image.height)
+            elif (triton):
+                INPUT_NAMES = ["images"]
+                OUTPUT_NAMES = ["num_dets", "det_boxes", "det_scores", "det_classes"]
+                size = 1280
+                inputs = []
+                outputs = []
+                inputs.append(grpcclient.InferInput(INPUT_NAMES[0], [1, 3, size, size], "FP32"))
+                outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[0]))
+                outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[1]))
+                outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[2]))
+                outputs.append(grpcclient.InferRequestedOutput(OUTPUT_NAMES[3]))
+
+                image = np.asarray(pil_image)
+                #image = image / 255
+                image = preprocess(image, [size, size])
+                image = np.expand_dims(image, axis=0)
+                #image = np.transpose(image, axes=[0, 3, 1, 2])
+                #image = image.astype(np.float32)
+
+                inputs[0].set_data_from_numpy(image)
+                results = triton_client.infer(model_name=model, inputs=inputs, outputs=outputs)
+
+                num_dets = results.as_numpy(OUTPUT_NAMES[0])
+                det_boxes = results.as_numpy(OUTPUT_NAMES[1])
+                det_scores = results.as_numpy(OUTPUT_NAMES[2])
+                det_classes = results.as_numpy(OUTPUT_NAMES[3])
+                input_image = image
+                response = postprocess(num_dets, det_boxes, det_scores, det_classes, pil_image.width, pil_image.height, [size, size])
+                inferf = time.perf_counter()
+                objects = get_objects_triton(response, pil_image.width, pil_image.height)
 
             for obj in objects:
                 name = obj["name"]
@@ -438,13 +572,15 @@ else:
                 col2.write(response)
             else:
                 df = pd.DataFrame()
-                for pred in response:
-                    label = list(pred.keys())[0]
-                    row = [label, f"{pred['score']:0.2f}", f"{pred[label][0]/pil_image.width:0.2f}",
-                        f"{pred[label][1]/pil_image.height:0.2f}", f"{pred[label][2]/pil_image.width:0.2f}", f"{pred[label][3]/pil_image.height:0.2f}"]
+                for obj in objects:
+                    label = obj["name"]
+                    row = [label, f"{obj['confidence']:0.2f}", f"{obj['bounding_box']['x_min']:0.2f}",
+                        f"{obj['bounding_box']['y_min']:0.2f}", f"{obj['bounding_box']['x_max']:0.2f}", f"{obj['bounding_box']['y_max']:0.2f}"]
                     row = pd.DataFrame(row).T
                     df = df.append(row)
                     # col2.write(row)
+                if (df.shape[0] > 0):
+                    df.sort_values(by=[1], ascending=False, inplace=True)
 
             timer_placeholder.write(
                 f"Infer in {inferf - infers:0.4f}s or {1/(inferf-infers):0.4f} FPS")
