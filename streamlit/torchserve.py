@@ -72,6 +72,8 @@ class ThreadedCamera(object):
 st.set_page_config(layout="wide")
 
 TEST_IMAGES = {
+    "Nursery": "http://192.168.10.159/snap.jpeg",
+    "Nursery feed": "rtsps://192.168.10.1:7441/oiAIps7SMWTqNowe?enableSrtp",
     "Front snap": "http://192.168.10.184/snap.jpeg",
     "Dock snap": "http://192.168.10.198/snap.jpeg",
     "Driveway snap": "http://192.168.10.246/snap.jpeg",
@@ -387,6 +389,11 @@ if ('Detect' in mode):
 
 else:
     hide = st.sidebar.checkbox("Hide excluded objects", value=True)
+    detections = ['all', 'person', 'car', 'animal', 'other']
+    detection = st.sidebar.selectbox('Detections', detections)
+    hours = st.sidebar.slider("hours", 1, 72, 24)
+    cameras = ['all', 'uvc_g3_pro_a_high']
+    camera = st.sidebar.selectbox('Camera', cameras)
 
 
 
@@ -426,7 +433,14 @@ if 'Sort' in mode:
 
     df = pd.read_csv(labels, header=0).tail(10000);
     df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
-    now = datetime.datetime.now() - datetime.timedelta(days=7)
+    if detection and detection != 'all':
+        if detection == 'other':
+            df = df[~df['label'].isin(['person', 'car', 'animal'])]
+        else:
+            df = df[df['label'] == detection]
+    if cameras and cameras != 'all':
+        df = df[df['entity'].isin(cameras)]
+    now = datetime.datetime.now() - datetime.timedelta(hours=hours)
     df = df[df['stamp'] >= now.strftime("%Y-%m-%d")]
     df['gpuuid'] = df['puuid'].map(df.set_index('uuid')['puuid'])
     df['xr'] = df.apply(lambda row: highestPowerof2(row.x2 - row.x1), axis=1)
@@ -439,18 +453,20 @@ if 'Sort' in mode:
     dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c', 'xr', 'yr'], values=['uuid'], aggfunc='count')
     dfc.reset_index(inplace=True)
     dfc.sort_values(ascending=False, by=['uuid'], inplace=True)
-    dfc = dfc[dfc['uuid'] > 3]
-    dfc=dfc.head(150)
+    # dfc = dfc[dfc['uuid'] > 2]
+    # dfc=dfc.head(150)
     df = pd.merge(df, dfc, on=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], how='inner')
 
-    dfc
+    df
 
     for index, row in dfc.iterrows():
         dfcu = df[(df['entity'] == row.entity) & (df['label'] == row.label) & (df['x1c'] == row.x1c) & (df['y1c'] == row.y1c) & (df['x2c'] == row.x2c) & (df['y2c'] == row.y2c)]
         dfcu['filename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_" + dfcu['model'] + "_object_" + dfcu['label'] + "_" + dfcu['uuid_x'] + "_pad.jpg"
         dfcu['pfilename'] = "/mnt/localshared/data/hassio/tstreamer/" + dfcu['entity'] + "_" + dfcu['stamp'] + "_nobox_" + dfcu['puuid'] + ".jpg"
         dfcu['exists'] = dfcu['pfilename'].map(os.path.isfile)
-        dfcu = dfcu[dfcu['exists'] == 1].head(5)
+        dfcu.sort_values(ascending=True, by=['stamp'], inplace=True)
+
+        dfcu = dfcu[dfcu['exists'] == 1].head(8)
 
         if len(dfcu) > 0:
             with open(dfcu.iloc[0]['pfilename'],'rb') as img_file:
@@ -463,14 +479,11 @@ if 'Sort' in mode:
                 cx = round (((row.x1c + row.x2c) / 2) / width,2)
                 cy = round (((row.y1c + row.y2c) / 2) / height,2)
 
-                area_min = round(row.xr*row.yr / (width*height) ,3)
+                area_min = round(((row.x2c - row.x1c)*(row.y2c - row.y1c))/ (width*height) ,3)
                 xr = round(row.xr / width / 2, 3)
                 yr = round(row.yr / height / 2, 3)
 
-                cx
-                cy
-
-                exclduestr = f"(\"{row.entity}\" not in args.name or \"{row.label}\" not in obj[\"name\"] or not ({area_min*0.75}<=obj[\"box_area\"]<={area_min*2} and {cx-xr} <= obj[\"centroid\"][\"x\"] <= {cx+xr} and {cy-yr} <= obj[\"centroid\"][\"y\"] <= {cy+yr})) and"
+                exclduestr = f"(\"{row.entity}\" not in args.name or \"{row.label}\" not in obj[\"name\"] or not ({area_min*0.5}<=obj[\"box_area\"]<={area_min*1.25} and {cx-xr} <= obj[\"centroid\"][\"x\"] <= {cx+xr} and {cy-yr} <= obj[\"centroid\"][\"y\"] <= {cy+yr})) and"
 
                 with open(excludes_file) as excludesfile:
                     if exclduestr in excludesfile.read() and hide:
