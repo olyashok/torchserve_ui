@@ -80,6 +80,7 @@ TEST_IMAGES = {
     "Dock feed": "rtsps://192.168.10.1:7441/vHuSBFu9c7sMzM6C?enableSrtp",
     "Inside snap": "http://192.168.10.197/snap.jpeg",
     "Deck snap": "http://192.168.10.191/snap.jpeg",
+    "Garage snap": "http://192.168.10.206/snap.jpeg",
     "Inside feed": "rtsps://192.168.10.1:7441/IHAsRXsVzYuJwQK6?enableSrtp",
     "Backyard stock": "https://i.pinimg.com/564x/44/2c/24/442c24d9456bf2635bceb0cedfdee09e.jpg"
 }
@@ -356,7 +357,7 @@ if ('Detect' in mode):
         elif not triton_client.is_model_ready('yolov7'):
             st.write("FAILED : is_model_ready")
             triton = False
-        models = ['none','yolov7','yolov7x','yolov7-w6','yolov7-e6e']
+        models = ['none','yolov_nas_l']
     except Exception as e:
         st.write("context creation failed: " + str(e))
         triton = False
@@ -392,7 +393,13 @@ else:
     detections = ['all', 'person', 'car', 'animal', 'other']
     detection = st.sidebar.selectbox('Detections', detections)
     hours = st.sidebar.slider("hours", 1, 72, 24)
-    cameras = ['all', 'uvc_g3_pro_a_high']
+
+    labels = "/mnt/localshared/data/hassio/tstreamer/labels.csv"
+    df = pd.read_csv(labels, header=0)
+    df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
+
+    cameras = ['all']
+    cameras.extend(df['entity'].unique())
     camera = st.sidebar.selectbox('Camera', cameras)
 
 
@@ -428,20 +435,17 @@ frameId = 0
 skip = 0
 
 if 'Sort' in mode:
-    labels = "/mnt/localshared/data/hassio/tstreamer/labels.csv"
     excludes_file="/mnt/localshared/data/hassio/tstreamer/exclude.lst"
 
-    df = pd.read_csv(labels, header=0).tail(10000);
-    df.columns = ['stamp', 'uuid', 'puuid', 'entity', 'model', 'confidence', 'similarity', 'label', 'area', 'x1', 'y1', 'x2', 'y2']
     if detection and detection != 'all':
         if detection == 'other':
             df = df[~df['label'].isin(['person', 'car', 'animal'])]
         else:
             df = df[df['label'] == detection]
-    if cameras and cameras != 'all':
-        df = df[df['entity'].isin(cameras)]
+    if camera and camera != 'all':
+        df = df[df['entity'].isin(camera)]
     now = datetime.datetime.now() - datetime.timedelta(hours=hours)
-    df = df[df['stamp'] >= now.strftime("%Y-%m-%d")]
+    df = df[df['stamp'] >= now.strftime("%Y-%m-%d_%H-%M-%S")]
     df['gpuuid'] = df['puuid'].map(df.set_index('uuid')['puuid'])
     df['xr'] = df.apply(lambda row: highestPowerof2(row.x2 - row.x1), axis=1)
     df['yr'] = df.apply(lambda row: highestPowerof2(row.y2 - row.y1), axis=1)
@@ -449,7 +453,7 @@ if 'Sort' in mode:
     df['x2c'] = round(df['x2']/df['xr'])*df['xr']
     df['y1c'] = round(df['y1']/df['yr'])*df['yr']
     df['y2c'] = round(df['y2']/df['yr'])*df['yr']
-    df = df[(df.model == "yolov7x")]
+    df = df[(df.model == "yolo_nas_l")]
     dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c', 'xr', 'yr'], values=['uuid'], aggfunc='count')
     dfc.reset_index(inplace=True)
     dfc.sort_values(ascending=False, by=['uuid'], inplace=True)
@@ -483,13 +487,13 @@ if 'Sort' in mode:
                 xr = round(row.xr / width / 2, 3)
                 yr = round(row.yr / height / 2, 3)
 
-                exclduestr = f"(\"{row.entity}\" not in args.name or \"{row.label}\" not in obj[\"name\"] or not ({area_min*0.5}<=obj[\"box_area\"]<={area_min*1.25} and {cx-xr} <= obj[\"centroid\"][\"x\"] <= {cx+xr} and {cy-yr} <= obj[\"centroid\"][\"y\"] <= {cy+yr})) and"
+                exclduestr = f"(\"{row.entity}\" not in args.name or \"{row.label}\" not in obj[\"name\"] or not ({area_min*0.5}<=obj[\"box_area\"]<={area_min*2} and {cx-xr} <= obj[\"centroid\"][\"x\"] <= {cx+xr} and {cy-yr} <= obj[\"centroid\"][\"y\"] <= {cy+yr})) and"
 
                 with open(excludes_file) as excludesfile:
                     if exclduestr in excludesfile.read() and hide:
                         continue
 
-                st.write(f"{row['uuid']}")
+                # st.write(f"{row['uuid']}")
 
                 st.image(dfcu.filename.values.tolist(), width=100)
 
@@ -543,7 +547,7 @@ else:
             elif (triton):
                 INPUT_NAMES = ["images"]
                 OUTPUT_NAMES = ["num_dets", "det_boxes", "det_scores", "det_classes"]
-                size = 1280
+                size = 640
                 inputs = []
                 outputs = []
                 inputs.append(grpcclient.InferInput(INPUT_NAMES[0], [1, 3, size, size], "FP32"))
