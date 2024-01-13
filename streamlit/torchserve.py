@@ -453,15 +453,14 @@ if 'Sort' in mode:
     df['x2c'] = round(df['x2']/df['xr'])*df['xr']
     df['y1c'] = round(df['y1']/df['yr'])*df['yr']
     df['y2c'] = round(df['y2']/df['yr'])*df['yr']
-    df = df[(df.model == "yolo_nas_l")]
+
+    df = df[(df.model == "yolov8x")]
     dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c', 'xr', 'yr'], values=['uuid'], aggfunc='count')
     dfc.reset_index(inplace=True)
     dfc.sort_values(ascending=False, by=['uuid'], inplace=True)
     # dfc = dfc[dfc['uuid'] > 2]
     # dfc=dfc.head(150)
     df = pd.merge(df, dfc, on=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c'], how='inner')
-
-    df
 
     for index, row in dfc.iterrows():
         dfcu = df[(df['entity'] == row.entity) & (df['label'] == row.label) & (df['x1c'] == row.x1c) & (df['y1c'] == row.y1c) & (df['x2c'] == row.x2c) & (df['y2c'] == row.y2c)]
