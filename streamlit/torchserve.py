@@ -449,10 +449,10 @@ if 'Sort' in mode:
     df['gpuuid'] = df['puuid'].map(df.set_index('uuid')['puuid'])
     df['xr'] = df.apply(lambda row: highestPowerof2(row.x2 - row.x1), axis=1)
     df['yr'] = df.apply(lambda row: highestPowerof2(row.y2 - row.y1), axis=1)
-    df['x1c'] = round(df['x1']/df['xr'])*df['xr']
-    df['x2c'] = round(df['x2']/df['xr'])*df['xr']
-    df['y1c'] = round(df['y1']/df['yr'])*df['yr']
-    df['y2c'] = round(df['y2']/df['yr'])*df['yr']
+    df['x1c'] = (df['x1']/df['xr']).round() * df['xr']
+    df['x2c'] = (df['x2']/df['xr']).round() * df['xr']
+    df['y1c'] = (df['y1']/df['yr']).round() * df['yr']
+    df['y2c'] = (df['y2']/df['yr']).round() * df['yr']
 
     df = df[(df.model == "yolov8x")]
     dfc = df.pivot_table(index=['entity', 'label', 'x1c', 'y1c', 'x2c', 'y2c', 'xr', 'yr'], values=['uuid'], aggfunc='count')
